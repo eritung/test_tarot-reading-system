@@ -199,9 +199,12 @@ function render() {
       </section>
 
       <section class="panel panel-gold">
-        <h2 class="section-title">✦ 本機備份紀錄</h2>
+        <div class="row" style="justify-content: space-between; align-items: center; gap: 12px;">
+          <h2 class="section-title">✦ 本機備份紀錄</h2>
+          <button class="button btn-outline history-section-toggle" id="toggleLocalSectionBtn" type="button">${isLocalSectionExpanded ? '收合本機資料' : '展開本機資料'}</button>
+        </div>
         <div class="divider"></div>
-        ${state.history.length === 0 ? `<div class="empty"><div style="font-size:30px;">🗂️</div><div>目前沒有任何本機紀錄</div></div>` : filteredLocal.length === 0 ? `<div class="empty"><div style="font-size:30px;">🔎</div><div>找不到符合關鍵字的本機紀錄</div></div>` : `
+        ${!isLocalSectionExpanded ? `<div class="helper">本機資料預設隱藏，點擊上方按鈕即可展開查看。</div>` : state.history.length === 0 ? `<div class="empty"><div style="font-size:30px;">🗂️</div><div>目前沒有任何本機紀錄</div></div>` : filteredLocal.length === 0 ? `<div class="empty"><div style="font-size:30px;">🔎</div><div>找不到符合關鍵字的本機紀錄</div></div>` : `
           <div class="history-list">
             ${filteredLocal.map((item) => {
               const expanded = expandedLocalIds.has(item.id)
@@ -256,6 +259,11 @@ function render() {
       render()
     })
   }
+
+  root.querySelector('#toggleLocalSectionBtn')?.addEventListener('click', () => {
+    isLocalSectionExpanded = !isLocalSectionExpanded
+    render()
+  })
 
   root.querySelector('#clearAllBtn')?.addEventListener('click', () => {
     if (!confirm('確定要清空全部本機紀錄嗎？')) return
