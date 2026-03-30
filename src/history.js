@@ -12,23 +12,6 @@ let searchSelectionEnd = null
 const expandedRemoteIds = new Set()
 const expandedLocalIds = new Set()
 
-function normalizeCard(card = {}) {
-  return {
-    name: card.name || '',
-    position: card.position || card.raw_position || card.custom_position || '',
-    reversed: !!card.reversed,
-  }
-}
-
-function getReadingSignature(row = {}) {
-  const cards = (row.cards || []).map(normalizeCard)
-  return JSON.stringify({
-    question_type: row.question_type || '',
-    question: row.question || '',
-    cards,
-  })
-}
-
 function formatDate(dateString) {
   if (!dateString) return '—'
   return new Date(dateString).toLocaleString('zh-TW', { hour12: false })
@@ -68,38 +51,19 @@ function buildRemoteGroups(rows = []) {
       map.set(key, {
         id: key,
         client_name: row.client_name,
+        question_type: row.question_type,
+        question: row.question,
         created_at: row.created_at,
-        latest_at: row.updated_at || row.created_at,
-        readingsMap: new Map(),
+        readings: [],
+        cards: [],
       })
     }
     const group = map.get(key)
-    const signature = getReadingSignature(row)
-    const existing = group.readingsMap.get(signature)
-    const currentTime = new Date(row.updated_at || row.created_at || 0).getTime()
-    const existingTime = existing ? new Date(existing.updated_at || existing.created_at || 0).getTime() : -1
-
-    if (!existing || currentTime >= existingTime) {
-      group.readingsMap.set(signature, row)
-    }
-
-    if (!group.created_at || new Date(row.created_at) < new Date(group.created_at)) group.created_at = row.created_at
-    if (!group.latest_at || new Date(row.updated_at || row.created_at) > new Date(group.latest_at)) group.latest_at = row.updated_at || row.created_at
+    group.readings.push(row)
+    if (!group.created_at || new Date(row.created_at) > new Date(group.created_at)) group.created_at = row.created_at
+    ;(row.cards || []).forEach((card) => group.cards.push(card))
   })
-
-  return Array.from(map.values())
-    .map((group) => {
-      const readings = Array.from(group.readingsMap.values())
-        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-      return {
-        id: group.id,
-        client_name: group.client_name,
-        created_at: group.created_at,
-        latest_at: group.latest_at,
-        readings,
-      }
-    })
-    .sort((a, b) => new Date(b.latest_at) - new Date(a.latest_at))
+  return Array.from(map.values()).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
 }
 
 async function loadRemoteReadings() {
@@ -199,12 +163,9 @@ function render() {
       </section>
 
       <section class="panel panel-gold">
-        <div class="row" style="justify-content: space-between; align-items: center; gap: 12px;">
-          <h2 class="section-title">✦ 本機備份紀錄</h2>
-          <button class="button btn-outline history-section-toggle" id="toggleLocalSectionBtn" type="button">${isLocalSectionExpanded ? '收合本機資料' : '展開本機資料'}</button>
-        </div>
+        <h2 class="section-title">✦ 本機備份紀錄</h2>
         <div class="divider"></div>
-        ${!isLocalSectionExpanded ? `<div class="helper">本機資料預設隱藏，點擊上方按鈕即可展開查看。</div>` : state.history.length === 0 ? `<div class="empty"><div style="font-size:30px;">🗂️</div><div>目前沒有任何本機紀錄</div></div>` : filteredLocal.length === 0 ? `<div class="empty"><div style="font-size:30px;">🔎</div><div>找不到符合關鍵字的本機紀錄</div></div>` : `
+        ${state.history.length === 0 ? `<div class="empty"><div style="font-size:30px;">🗂️</div><div>目前沒有任何本機紀錄</div></div>` : filteredLocal.length === 0 ? `<div class="empty"><div style="font-size:30px;">🔎</div><div>找不到符合關鍵字的本機紀錄</div></div>` : `
           <div class="history-list">
             ${filteredLocal.map((item) => {
               const expanded = expandedLocalIds.has(item.id)
@@ -259,11 +220,6 @@ function render() {
       render()
     })
   }
-
-  root.querySelector('#toggleLocalSectionBtn')?.addEventListener('click', () => {
-    isLocalSectionExpanded = !isLocalSectionExpanded
-    render()
-  })
 
   root.querySelector('#clearAllBtn')?.addEventListener('click', () => {
     if (!confirm('確定要清空全部本機紀錄嗎？')) return
