@@ -158,16 +158,21 @@ body::after {
 .brand-center-mobile, .center-mobile-buttons { width: auto; }
 .section-head-wrap { justify-content: space-between; }
 .action-row-wrap { align-items: center; }
+.header-compact-btn { padding: 9px 14px; min-width: 124px; }
+.header-button-group .button { width: auto; }
 
 @media (max-width: 760px) {
   .grid, .minor-suit-grid { grid-template-columns: 1fr 1fr; }
   .header-inner, .main-header-inner, .history-header-inner { align-items: center; flex-direction: column; text-align: center; }
   .brand-center-mobile { width: 100%; text-align: center; }
-  .center-mobile-buttons, .header-button-group { width: 100%; justify-content: center; }
+  .center-mobile-buttons, .header-button-group { width: 100%; justify-content: center; flex-wrap: nowrap; }
+  .header-button-group .button { flex: 0 1 auto; }
   .kv { grid-template-columns: 1fr; }
   .panel { padding: 18px; }
-  .card-top, .result-card-head, .history-item-head, .section-head-wrap, .action-row-wrap { flex-direction: column; align-items: stretch; }
-  .card-action-group, .result-card-actions { width: 100%; margin-left: 0; justify-content: flex-end; }
+  .result-card-head, .history-item-head, .section-head-wrap, .action-row-wrap { flex-direction: column; align-items: stretch; }
+  .card-top { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 12px; }
+  .card-action-group { width: auto; margin-left: auto; justify-content: flex-end; flex-direction: column; align-items: stretch; }
+  .result-card-actions { width: 100%; margin-left: 0; justify-content: flex-end; }
   .card-item .button, .result-card-actions .button, .history-item-head .button { min-width: 0; }
   .history-tools-grid { flex-direction: column; align-items: stretch; }
   .history-tools-actions { width: 100%; }
@@ -181,11 +186,15 @@ body::after {
   .header-inner { padding: 12px 0; }
   .brand h1 { font-size: 1.45rem; }
   .button { width: 100%; }
+  .header-button-group .button, .header-compact-btn { width: auto; }
+  .header-button-group { display: flex; justify-content: center; gap: 10px; }
   .row { gap: 10px; }
   .cards .card-item { padding: 14px; }
   .card-content { width: 100%; }
   .card-name { font-size: 17px; }
-  .card-action-group { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+  .card-top { grid-template-columns: minmax(0,1fr) auto; align-items: start; }
+  .card-action-group { display: flex; flex-direction: column; width: auto; }
+  .card-action-group .button { width: auto; min-width: 78px; }
   .minor-suit-grid { grid-template-columns: 1fr 1fr; }
   .modal-footer-row { flex-direction: column-reverse; }
   .modal-category-row { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }

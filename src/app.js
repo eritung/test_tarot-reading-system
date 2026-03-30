@@ -7,6 +7,7 @@ const state = loadState()
 const app = document.querySelector('#app')
 
 if (!Array.isArray(state.current.generatedReadings)) state.current.generatedReadings = []
+if (typeof state.current.isGenerating !== 'boolean') state.current.isGenerating = false
 state.history = (state.history || []).map((item) => ({ ...item, generatedReadings: Array.isArray(item.generatedReadings) ? item.generatedReadings : [] }))
 
 function uid(prefix = 'id') {
@@ -91,14 +92,14 @@ function buildCardsPayload(cards = state.current.drawnCards, useReversal = state
   }))
 }
 
-function buildPayloadFromCurrent() {
+function buildPayloadFromCurrent(cards = state.current.drawnCards) {
   return {
     client_name: state.current.customerName.trim(),
     question_type: getQuestionTypeValue(),
     question: state.current.questionContent.trim(),
     spread_type: '自訂牌陣',
     include_reversed: Boolean(state.current.useReversal),
-    cards: buildCardsPayload(),
+    cards: buildCardsPayload(cards, state.current.useReversal),
   }
 }
 
@@ -240,107 +241,158 @@ function upsertGeneratedResult(resultItem) {
   syncCurrentToHistory()
 }
 
+function refreshGeneratedReadingTitles() {
+  state.current.generatedReadings = state.current.generatedReadings.map((item, index) => ({
+    ...item,
+    title: `第 ${state.current.generatedReadings.length - index} 次解牌`,
+  }))
+}
+
+async function requestSingleReading(payload, targetResultId = null) {
+  const response = await fetch(FUNCTION_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+
+  const data = await response.json()
+  if (!response.ok || !data.ok) {
+    throw new Error(data?.error?.message || data?.error || 'AI 解牌失敗')
+  }
+
+  const aiResult = data.result || '沒有取得解牌結果'
+  let readingId = data.reading_id || ''
+
+  const existing = targetResultId ? state.current.generatedReadings.find((item) => item.id === targetResultId) : null
+  if (!readingId && existing?.readingId) {
+    readingId = await updateReadingInSupabase(existing.readingId, aiResult)
+  } else if (!readingId) {
+    readingId = await insertReadingToSupabase(payload, aiResult)
+  }
+
+  return { aiResult, readingId }
+}
+
 async function generateAI(options = {}) {
   const { payload = buildPayloadFromCurrent(), targetResultId = null } = options
 
   if (!payload.client_name?.trim()) return showToast('請先輸入客戶姓名', 'error')
   if (!payload.question?.trim()) return showToast('請輸入客戶提問內容', 'error')
   if (!Array.isArray(payload.cards) || payload.cards.length === 0) return showToast('請至少新增一張牌', 'error')
+  if (state.current.isGenerating) return
 
-  const buttonSelector = targetResultId ? `[data-regenerate-result="${targetResultId}"]` : '#generateBtn'
-  const activeBtn = app.querySelector(buttonSelector)
-  if (activeBtn) activeBtn.disabled = true
+  state.current.isGenerating = true
+  render()
 
-  let loadingId = targetResultId
-  if (!loadingId) {
-    loadingId = uid('result')
-    upsertGeneratedResult({
-      id: loadingId,
-      readingId: '',
-      title: `第 ${state.current.generatedReadings.length + 1} 次解牌`,
-      aiResult: '',
-      payloadSnapshot: structuredClone(payload),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      isExpanded: true,
-      isLoading: true,
-    })
-    render()
-  } else {
-    const existing = state.current.generatedReadings.find((item) => item.id === targetResultId)
-    if (existing) {
+  try {
+    if (targetResultId) {
+      const existing = state.current.generatedReadings.find((item) => item.id === targetResultId)
+      if (!existing?.payloadSnapshot) throw new Error('找不到可重新生成的占卜資料')
+
       upsertGeneratedResult({
         ...existing,
         isLoading: true,
         isExpanded: true,
+        errorMessage: '',
       })
       render()
-    }
-  }
 
-  try {
-    const response = await fetch(FUNCTION_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    })
+      const { aiResult, readingId } = await requestSingleReading(payload, targetResultId)
+      upsertGeneratedResult({
+        ...existing,
+        readingId,
+        aiResult,
+        payloadSnapshot: structuredClone(payload),
+        updatedAt: new Date().toISOString(),
+        isExpanded: true,
+        isLoading: false,
+        errorMessage: '',
+      })
 
-    const data = await response.json()
-    if (!response.ok || !data.ok) {
-      throw new Error(data?.error?.message || data?.error || 'AI 解牌失敗')
-    }
-
-    const aiResult = data.result || '沒有取得解牌結果'
-    let readingId = data.reading_id || ''
-
-    const existing = state.current.generatedReadings.find((item) => item.id === loadingId)
-    if (!readingId && existing?.readingId) {
-      readingId = await updateReadingInSupabase(existing.readingId, aiResult)
-    } else if (!readingId) {
-      readingId = await insertReadingToSupabase(payload, aiResult)
+      persistCurrent()
+      syncCurrentToHistory()
+      render()
+      document.querySelector(`#result-${targetResultId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      showToast('已重新生成指定結果')
+      return
     }
 
-    const base = existing || {
-      id: loadingId,
-      title: `第 ${state.current.generatedReadings.length + 1} 次解牌`,
+    const existingCardKeys = new Set(
+      state.current.generatedReadings
+        .map((item) => JSON.stringify(item.payloadSnapshot?.cards?.[0] || null))
+        .filter(Boolean)
+    )
+
+    const cardPayloads = payload.cards
+      .map((card) => ({
+        ...payload,
+        cards: [structuredClone(card)],
+      }))
+      .filter((singlePayload) => !existingCardKeys.has(JSON.stringify(singlePayload.cards[0])))
+
+    if (!cardPayloads.length) {
+      showToast('目前抽出的牌都已各自產生過結果，可直接使用單筆重新生成。', 'error')
+      return
+    }
+
+    const loadingItems = cardPayloads.map((singlePayload, index) => ({
+      id: uid('result'),
+      readingId: '',
+      title: `第 ${state.current.generatedReadings.length + index + 1} 次解牌`,
+      aiResult: '',
+      payloadSnapshot: structuredClone(singlePayload),
       createdAt: new Date().toISOString(),
-    }
-
-    upsertGeneratedResult({
-      ...base,
-      readingId,
-      aiResult,
-      payloadSnapshot: structuredClone(payload),
-      createdAt: base.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       isExpanded: true,
-      isLoading: false,
-    })
+      isLoading: true,
+      errorMessage: '',
+    }))
+
+    loadingItems.forEach((item) => upsertGeneratedResult(item))
+    refreshGeneratedReadingTitles()
+    render()
+
+    for (const loadingItem of loadingItems) {
+      try {
+        const { aiResult, readingId } = await requestSingleReading(loadingItem.payloadSnapshot)
+        upsertGeneratedResult({
+          ...loadingItem,
+          readingId,
+          aiResult,
+          updatedAt: new Date().toISOString(),
+          isLoading: false,
+          errorMessage: '',
+        })
+      } catch (error) {
+        console.error(error)
+        upsertGeneratedResult({
+          ...loadingItem,
+          isLoading: false,
+          errorMessage: error?.message || '處理失敗',
+          updatedAt: new Date().toISOString(),
+        })
+      }
+      refreshGeneratedReadingTitles()
+      render()
+    }
 
     state.current.id = state.current.id || uid('session')
     state.current.isStarted = true
     persistCurrent()
     syncCurrentToHistory()
     render()
-    document.querySelector(`#result-${loadingId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    showToast(existing ? '已重新生成該筆解牌' : '已新增獨立解牌結果')
+    document.querySelector(`#result-${loadingItems[0]?.id || ''}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    showToast(`已新增 ${loadingItems.length} 筆獨立解牌結果`)
   } catch (error) {
     console.error(error)
-    const existing = state.current.generatedReadings.find((item) => item.id === loadingId)
-    if (existing) {
-      upsertGeneratedResult({
-        ...existing,
-        isLoading: false,
-        errorMessage: error?.message || '處理失敗',
-      })
-    }
     render()
     showToast(error?.message || '處理失敗', 'error')
   } finally {
-    const latestBtn = app.querySelector(buttonSelector)
-    if (latestBtn) latestBtn.disabled = false
+    state.current.isGenerating = false
+    persistCurrent()
+    render()
   }
 }
 
@@ -383,13 +435,6 @@ function bindInputs() {
     const card = state.current.drawnCards.find((c) => c.id === id)
     if (card && confirm(`確定要刪除「${card.cardName}」嗎？`)) deleteCard(id)
   }))
-  app.querySelectorAll('[data-toggle-result]').forEach((el) => el.addEventListener('click', () => {
-    const item = state.current.generatedReadings.find((r) => r.id === el.dataset.toggleResult)
-    if (!item) return
-    item.isExpanded = !item.isExpanded
-    persistCurrent()
-    render()
-  }))
   app.querySelectorAll('[data-regenerate-result]').forEach((el) => el.addEventListener('click', () => {
     const item = state.current.generatedReadings.find((r) => r.id === el.dataset.regenerateResult)
     if (!item?.payloadSnapshot) return
@@ -405,7 +450,7 @@ function renderHeaderOnly() {
 
 function renderResultCards() {
   if (!state.current.generatedReadings.length) {
-    return '<div class="helper">尚未產生解牌。每次按下「產生解牌」都會新增一筆獨立結果，之後可單獨重生，不會回頭重算前面的內容。</div>'
+    return '<div class="helper">尚未產生解牌。每次按下「產生解牌」會依目前抽出的每一張牌，分別新增一筆獨立結果；之後也可以只針對單筆重新生成。</div>'
   }
 
   return state.current.generatedReadings.map((item, index) => `
@@ -416,14 +461,11 @@ function renderResultCards() {
           <div class="result-card-summary">${item.payloadSnapshot?.cards?.map((c) => c.name).join('、') || '—'}</div>
         </div>
         <div class="row result-card-actions">
-          <button class="button btn-outline" type="button" data-toggle-result="${item.id}">${item.isExpanded ? '收合' : '展開'}</button>
-          <button class="button btn-gold" type="button" data-regenerate-result="${item.id}" ${item.isLoading ? 'disabled' : ''}>${item.isLoading ? '重生中…' : '重新生成'}</button>
+          <button class="button btn-gold" type="button" data-regenerate-result="${item.id}" ${item.isLoading || state.current.isGenerating ? 'disabled' : ''}>${item.isLoading ? '占卜中…' : '重新生成'}</button>
         </div>
       </div>
-      ${item.isExpanded ? `
-        <div class="divider"></div>
-        <div class="ai-result">${item.errorMessage ? `<span class="error-text">${item.errorMessage}</span>` : item.aiResult || '<span class="helper">尚未生成內容</span>'}</div>
-      ` : ''}
+      <div class="divider"></div>
+      <div class="ai-result">${item.errorMessage ? `<span class="error-text">${item.errorMessage}</span>` : item.aiResult || '<span class="helper">尚未生成內容</span>'}</div>
     </article>
   `).join('')
 }
@@ -450,8 +492,8 @@ function render() {
           <div class="helper" style="margin-top:6px;">打開網頁即可直接使用，解牌結果會同步寫入 Supabase 與本機備份。</div>
         </div>
         <div class="row header-button-group center-mobile-buttons">
-          <a class="button btn-ghost" href="./history.html">📋 歷史紀錄</a>
-          ${state.current.isStarted ? '<button class="button btn-outline" id="nextBtn">👤 下一位客戶</button>' : ''}
+          <a class="button btn-outline header-compact-btn" href="./history.html">📋 歷史紀錄</a>
+          ${state.current.isStarted ? '<button class="button btn-outline header-compact-btn" id="nextBtn">👤 下一位客戶</button>' : ''}
         </div>
       </div>
     </header>
@@ -464,7 +506,7 @@ function render() {
           <div><label class="label">問題類型</label><select class="select" id="questionType">${QUESTION_TYPES.map((t) => `<option value="${t}" ${state.current.questionType === t ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
           ${state.current.questionType === '其他' ? `<div><label class="label">自訂類型</label><input class="input" id="customQuestionType" value="${state.current.customQuestionType || ''}" placeholder="請輸入問題類型..."></div>` : '<div></div>'}
           <div class="full"><label class="label">客戶提問內容 *</label><textarea class="textarea" id="questionContent" placeholder="輸入客戶的具體問題或想了解的方向...">${state.current.questionContent || ''}</textarea></div>
-          <div class="full"><div class="row"><button class="toggle ${state.current.useReversal ? 'active' : ''}" id="useReversal" type="button"></button><div><div>加入正逆位評估</div><div class="helper">${state.current.useReversal ? '啟用中' : '未啟用'}</div></div></div></div>
+          <div class="full"><div class="row"><button class="toggle ${state.current.useReversal ? 'active' : ''}" id="useReversal" type="button"></button><div><div>加入正逆位評估</div></div></div></div>
         </div>
         ${state.current.isStarted ? '' : `<div style="margin-top:18px;"><button class="button btn-gold" id="startBtn" ${state.current.customerName.trim() ? '' : 'disabled'}>✦ 開始諮詢紀錄</button></div>`}
       </section>
@@ -480,10 +522,10 @@ function render() {
 
       <section style="margin-top:20px;">
         <div class="row action-row-wrap">
-          <button class="button btn-gold" id="generateBtn" ${state.current.drawnCards.length === 0 || !state.current.questionContent.trim() ? 'disabled' : ''}>🔮 產生新的獨立解牌</button>
+          <button class="button btn-gold" id="generateBtn" ${state.current.drawnCards.length === 0 || !state.current.questionContent.trim() || state.current.isGenerating ? 'disabled' : ''}>${state.current.isGenerating ? '🔮 占卜中…' : '🔮 產生新的獨立解牌'}</button>
           <button class="button btn-outline" id="saveBtn" ${state.current.customerName.trim() ? '' : 'disabled'}>💾 儲存本機紀錄</button>
         </div>
-        ${state.current.drawnCards.length === 0 ? '<div class="helper" style="margin-top:8px;">* 請先加入至少一張牌卡才能產生解牌</div>' : '<div class="helper" style="margin-top:8px;">每按一次都會新增一筆獨立結果，後續的重新生成只會作用在該筆結果。</div>'}
+        ${state.current.drawnCards.length === 0 ? '<div class="helper" style="margin-top:8px;">* 請先加入至少一張牌卡才能產生解牌</div>' : '<div class="helper" style="margin-top:8px;">每按一次都會依目前抽出的每張牌，分別新增一筆獨立結果；之後的重新生成也只會作用在指定的那一筆。</div>'}
       </section>
 
       <section id="ai-result" class="panel panel-gold" style="margin-top:20px;">

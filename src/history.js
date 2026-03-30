@@ -6,6 +6,9 @@ const state = loadState()
 let remoteReadings = []
 let keyword = ''
 let isComposing = false
+let shouldRefocusSearch = false
+let searchSelectionStart = null
+let searchSelectionEnd = null
 const expandedRemoteIds = new Set()
 const expandedLocalIds = new Set()
 
@@ -171,16 +174,33 @@ function render() {
 
   const searchInput = root.querySelector('#keywordSearch')
   if (searchInput) {
+    if (shouldRefocusSearch) {
+      searchInput.focus()
+      const nextStart = searchSelectionStart ?? keyword.length
+      const nextEnd = searchSelectionEnd ?? nextStart
+      searchInput.setSelectionRange(nextStart, nextEnd)
+      shouldRefocusSearch = false
+    }
     searchInput.addEventListener('compositionstart', () => { isComposing = true })
     searchInput.addEventListener('compositionend', (e) => {
       isComposing = false
       keyword = e.target.value
+      searchSelectionStart = e.target.selectionStart
+      searchSelectionEnd = e.target.selectionEnd
+      shouldRefocusSearch = true
       render()
     })
     searchInput.addEventListener('input', (e) => {
       if (isComposing) return
       keyword = e.target.value
+      searchSelectionStart = e.target.selectionStart
+      searchSelectionEnd = e.target.selectionEnd
+      shouldRefocusSearch = true
       render()
+    })
+    searchInput.addEventListener('keydown', (e) => {
+      searchSelectionStart = e.target.selectionStart
+      searchSelectionEnd = e.target.selectionEnd
     })
   }
 
