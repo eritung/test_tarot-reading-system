@@ -1,11 +1,13 @@
 import { MAJOR_ARCANA, MINOR_ARCANA, SUITS, QUESTION_TYPES, CARD_POSITIONS } from './data.js'
 import { loadState, saveState, upsertHistory, resetCurrent } from './storage.js'
-import { generateMockReading } from './ai-mock.js'
+import { FUNCTION_URL } from './config.js'
+import { supabase, getCurrentUser, getAccessToken } from './supabase-client.js'
 
 const state = loadState()
 const app = document.querySelector('#app')
+state.authUser = null
 
-function uid(prefix='id') {
+function uid(prefix = 'id') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
@@ -18,7 +20,9 @@ function showToast(msg, type = 'success') {
 }
 
 function getQuestionTypeValue() {
-  return state.current.questionType === '其他' ? (state.current.customQuestionType || '其他') : state.current.questionType
+  return state.current.questionType === '其他'
+    ? (state.current.customQuestionType || '其他')
+    : state.current.questionType
 }
 
 function persistCurrent() {
@@ -142,32 +146,148 @@ function openModal(editCard = null) {
       showToast(editCard ? '牌卡已更新' : '已加入牌卡')
     })
   }
+
   renderModal()
   document.body.appendChild(wrapper)
 }
 
-function generateAI() {
+async function generateAI() {
   if (!state.current.customerName.trim()) return showToast('請輸入客戶姓名', 'error')
   if (!state.current.questionContent.trim()) return showToast('請輸入客戶提問內容', 'error')
   if (state.current.drawnCards.length === 0) return showToast('請至少新增一張牌', 'error')
-  state.current.aiResult = generateMockReading({ ...state.current, questionType: getQuestionTypeValue() })
-  persistCurrent()
-  saveSession()
-  render()
-  document.querySelector('#ai-result')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  showToast('已生成模擬解牌')
+
+  const generateBtn = app.querySelector('#generateBtn')
+  if (generateBtn) generateBtn.disabled = true
+
+  try {
+    const user = await getCurrentUser()
+    if (!user) {
+      showToast('請先登入，才能寫入 Supabase', 'error')
+      return
+    }
+
+    state.current.aiResult = '解牌生成中，請稍候…'
+    render()
+
+    const token = await getAccessToken()
+    const payload = {
+      client_name: state.current.customerName.trim(),
+      question_type: getQuestionTypeValue(),
+      question: state.current.questionContent.trim(),
+      cards: state.current.drawnCards.map((card) => ({
+        name: card.cardName,
+        position: card.position === '其他' ? (card.customPosition || '自訂牌位') : card.position,
+        reversed: Boolean(card.isReversed),
+      })),
+    }
+
+    const response = await fetch(FUNCTION_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    })
+
+    const data = await response.json()
+    if (!response.ok || !data.ok) {
+      throw new Error(data?.error?.message || data?.error || 'AI 解牌失敗')
+    }
+
+    state.current.aiResult = data.result || '沒有取得解牌結果'
+    persistCurrent()
+
+    const dbPayload = {
+      user_id: user.id,
+      client_name: state.current.customerName.trim(),
+      question: state.current.questionContent.trim(),
+      question_type: getQuestionTypeValue(),
+      spread_type: '自訂牌陣',
+      cards: state.current.drawnCards.map((card, index) => ({
+        order: index + 1,
+        name: card.cardName,
+        position: card.position === '其他' ? (card.customPosition || '自訂牌位') : card.position,
+        raw_position: card.position,
+        custom_position: card.customPosition || '',
+        reversed: Boolean(card.isReversed),
+      })),
+      include_reversed: Boolean(state.current.useReversal),
+      ai_result: state.current.aiResult,
+    }
+
+    const { data: inserted, error } = await supabase
+      .from('readings')
+      .insert(dbPayload)
+      .select('id')
+      .single()
+
+    if (error) throw error
+
+    state.current.id = inserted?.id || state.current.id
+    state.current.isStarted = true
+    upsertHistory(state, { ...state.current, questionType: getQuestionTypeValue(), isStarted: true })
+    render()
+    document.querySelector('#ai-result')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    showToast('已生成解牌並寫入 Supabase')
+  } catch (error) {
+    console.error(error)
+    state.current.aiResult = ''
+    render()
+    showToast(error?.message || '處理失敗', 'error')
+  } finally {
+    const latestBtn = app.querySelector('#generateBtn')
+    if (latestBtn) latestBtn.disabled = false
+  }
+}
+
+async function handleLogin() {
+  const email = prompt('請輸入 Email 以接收 Magic Link 登入連結')
+  if (!email) return
+  const { error } = await supabase.auth.signInWithOtp({
+    email,
+    options: { emailRedirectTo: window.location.href },
+  })
+  if (error) return showToast(`登入連結寄送失敗：${error.message}`, 'error')
+  showToast('Magic Link 已寄出，請到信箱完成登入')
+}
+
+async function handleLogout() {
+  const { error } = await supabase.auth.signOut()
+  if (error) return showToast(`登出失敗：${error.message}`, 'error')
+  showToast('已登出')
 }
 
 function bindInputs() {
-  app.querySelector('#customerName')?.addEventListener('input', (e) => { state.current.customerName = e.target.value; persistCurrent(); renderHeaderOnly() })
-  app.querySelector('#questionType')?.addEventListener('change', (e) => { state.current.questionType = e.target.value; persistCurrent(); render() })
-  app.querySelector('#customQuestionType')?.addEventListener('input', (e) => { state.current.customQuestionType = e.target.value; persistCurrent() })
-  app.querySelector('#questionContent')?.addEventListener('input', (e) => { state.current.questionContent = e.target.value; persistCurrent() })
-  app.querySelector('#useReversal')?.addEventListener('click', () => { state.current.useReversal = !state.current.useReversal; persistCurrent(); render() })
+  app.querySelector('#customerName')?.addEventListener('input', (e) => {
+    state.current.customerName = e.target.value
+    persistCurrent()
+    renderHeaderOnly()
+  })
+  app.querySelector('#questionType')?.addEventListener('change', (e) => {
+    state.current.questionType = e.target.value
+    persistCurrent()
+    render()
+  })
+  app.querySelector('#customQuestionType')?.addEventListener('input', (e) => {
+    state.current.customQuestionType = e.target.value
+    persistCurrent()
+  })
+  app.querySelector('#questionContent')?.addEventListener('input', (e) => {
+    state.current.questionContent = e.target.value
+    persistCurrent()
+  })
+  app.querySelector('#useReversal')?.addEventListener('click', () => {
+    state.current.useReversal = !state.current.useReversal
+    persistCurrent()
+    render()
+  })
   app.querySelector('#startBtn')?.addEventListener('click', startSession)
   app.querySelector('#saveBtn')?.addEventListener('click', saveSession)
   app.querySelector('#generateBtn')?.addEventListener('click', generateAI)
   app.querySelector('#nextBtn')?.addEventListener('click', nextCustomer)
+  app.querySelector('#loginBtn')?.addEventListener('click', handleLogin)
+  app.querySelector('#logoutBtn')?.addEventListener('click', handleLogout)
   app.querySelector('#addCardBtn')?.addEventListener('click', () => openModal())
   app.querySelectorAll('[data-edit-card]').forEach((el) => el.addEventListener('click', () => {
     const card = state.current.drawnCards.find((c) => c.id === el.dataset.editCard)
@@ -183,7 +303,9 @@ function bindInputs() {
 function renderHeaderOnly() {
   const meta = app.querySelector('#headerMeta')
   if (!meta) return
-  meta.innerHTML = state.current.customerName ? `目前諮詢：${state.current.customerName}${state.current.id ? ' <span class="badge">進行中</span>' : ''}` : ''
+  meta.innerHTML = state.current.customerName
+    ? `目前諮詢：${state.current.customerName}${state.current.id ? ' <span class="badge">進行中</span>' : ''}`
+    : ''
 }
 
 function render() {
@@ -192,10 +314,14 @@ function render() {
       <div style="font-size:34px; margin-bottom:8px;">🃏</div>
       <div>尚未加入任何牌卡</div>
       <div class="helper" style="margin-top:4px;">點擊「新增抽牌」開始記錄</div>
-    </div>` : state.current.drawnCards.sort((a, b) => a.cardOrder - b.cardOrder).map((card, idx) => {
-      const positionLabel = card.position === '其他' ? (card.customPosition || '自訂牌位') : card.position
-      return `<div class="card-item"><div class="card-top"><div><div class="card-meta">第 ${idx + 1} 張・${positionLabel}</div><div class="card-name">${card.cardName}</div><div class="card-meta">${state.current.useReversal ? (card.isReversed ? '逆位' : '正位') : '未啟用正逆位'} </div></div><div class="row"><button class="button btn-outline" data-edit-card="${card.id}">編輯</button><button class="button btn-danger" data-delete-card="${card.id}">刪除</button></div></div></div>`
-    }).join('')
+    </div>` : state.current.drawnCards
+      .sort((a, b) => a.cardOrder - b.cardOrder)
+      .map((card, idx) => {
+        const positionLabel = card.position === '其他' ? (card.customPosition || '自訂牌位') : card.position
+        return `<div class="card-item"><div class="card-top"><div><div class="card-meta">第 ${idx + 1} 張・${positionLabel}</div><div class="card-name">${card.cardName}</div><div class="card-meta">${state.current.useReversal ? (card.isReversed ? '逆位' : '正位') : '未啟用正逆位'} </div></div><div class="row"><button class="button btn-outline" data-edit-card="${card.id}">編輯</button><button class="button btn-danger" data-delete-card="${card.id}">刪除</button></div></div></div>`
+      }).join('')
+
+  const currentUser = state.authUser || null
 
   app.innerHTML = `
     <header class="header">
@@ -203,8 +329,11 @@ function render() {
         <div class="brand">
           <h1>🔮 塔羅解牌系統</h1>
           <small id="headerMeta">${state.current.customerName ? `目前諮詢：${state.current.customerName}${state.current.id ? ' <span class="badge">進行中</span>' : ''}` : ''}</small>
+          <div class="helper" style="margin-top:6px;">${currentUser ? `已登入：${currentUser.email || currentUser.id}` : '尚未登入 Supabase。登入後才能寫入雲端。'}</div>
         </div>
         <div class="row">
+          <button class="button ${currentUser ? 'btn-outline' : 'btn-gold'}" id="loginBtn">${currentUser ? '重新寄送登入連結' : '登入 Supabase'}</button>
+          ${currentUser ? '<button class="button btn-outline" id="logoutBtn">登出</button>' : ''}
           <a class="button btn-ghost" href="./history.html">📋 歷史紀錄</a>
           ${state.current.isStarted ? '<button class="button btn-outline" id="nextBtn">👤 下一位顧客</button>' : ''}
         </div>
@@ -235,8 +364,8 @@ function render() {
 
       <section style="margin-top:20px;">
         <div class="row">
-          <button class="button btn-gold" id="generateBtn" ${state.current.drawnCards.length === 0 || !state.current.questionContent.trim() ? 'disabled' : ''}>🔮 產生解牌</button>
-          <button class="button btn-outline" id="saveBtn" ${state.current.customerName.trim() ? '' : 'disabled'}>💾 儲存紀錄</button>
+          <button class="button btn-gold" id="generateBtn" ${state.current.drawnCards.length === 0 || !state.current.questionContent.trim() ? 'disabled' : ''}>🔮 產生解牌並寫入雲端</button>
+          <button class="button btn-outline" id="saveBtn" ${state.current.customerName.trim() ? '' : 'disabled'}>💾 儲存本機紀錄</button>
         </div>
         ${state.current.drawnCards.length === 0 ? '<div class="helper" style="margin-top:8px;">* 請先加入至少一張牌卡才能產生解牌</div>' : ''}
       </section>
@@ -244,11 +373,27 @@ function render() {
       <section id="ai-result" class="panel panel-gold" style="margin-top:20px;">
         <h2 class="section-title">✦ 解牌結果</h2>
         <div class="divider"></div>
-        <div class="ai-result">${state.current.aiResult ? state.current.aiResult : '<span class="helper">尚未產生解牌。這個靜態版會用模擬內容展示版型，正式版再改回 API 串接。</span>'}</div>
+        <div class="ai-result">${state.current.aiResult ? state.current.aiResult : '<span class="helper">尚未產生解牌。現在這版會呼叫 Supabase Edge Function，並將結果寫入 Supabase 與本機備份。</span>'}</div>
       </section>
     </main>
   `
+
   bindInputs()
 }
 
+async function syncAuthUser() {
+  try {
+    state.authUser = await getCurrentUser()
+  } catch (error) {
+    console.error(error)
+    state.authUser = null
+  }
+}
+
+supabase.auth.onAuthStateChange(async () => {
+  await syncAuthUser()
+  render()
+})
+
+await syncAuthUser()
 render()
