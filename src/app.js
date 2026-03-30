@@ -1,11 +1,10 @@
 import { MAJOR_ARCANA, MINOR_ARCANA, SUITS, QUESTION_TYPES, CARD_POSITIONS } from './data.js'
 import { loadState, saveState, upsertHistory, resetCurrent } from './storage.js'
 import { FUNCTION_URL } from './config.js'
-import { supabase, getCurrentUser, getAccessToken } from './supabase-client.js'
+import { supabase } from './supabase-client.js'
 
 const state = loadState()
 const app = document.querySelector('#app')
-state.authUser = null
 
 function uid(prefix = 'id') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -58,6 +57,17 @@ function deleteCard(id) {
   state.current.drawnCards = state.current.drawnCards.filter((c) => c.id !== id)
   persistCurrent()
   render()
+}
+
+function buildCardsPayload() {
+  return state.current.drawnCards.map((card, index) => ({
+    order: index + 1,
+    name: card.cardName,
+    position: card.position === '其他' ? (card.customPosition || '自訂牌位') : card.position,
+    raw_position: card.position,
+    custom_position: card.customPosition || '',
+    reversed: Boolean(card.isReversed),
+  }))
 }
 
 function openModal(editCard = null) {
@@ -151,8 +161,29 @@ function openModal(editCard = null) {
   document.body.appendChild(wrapper)
 }
 
+async function writeReadingToSupabase(aiResult) {
+  const dbPayload = {
+    client_name: state.current.customerName.trim(),
+    question: state.current.questionContent.trim(),
+    question_type: getQuestionTypeValue(),
+    spread_type: '自訂牌陣',
+    cards: buildCardsPayload(),
+    include_reversed: Boolean(state.current.useReversal),
+    ai_result: aiResult,
+  }
+
+  const { data, error } = await supabase
+    .from('readings')
+    .insert(dbPayload)
+    .select('id')
+    .single()
+
+  if (error) throw error
+  return data?.id || ''
+}
+
 async function generateAI() {
-  if (!state.current.customerName.trim()) return showToast('請輸入客戶姓名', 'error')
+  if (!state.current.customerName.trim()) return showToast('請先輸入客戶姓名', 'error')
   if (!state.current.questionContent.trim()) return showToast('請輸入客戶提問內容', 'error')
   if (state.current.drawnCards.length === 0) return showToast('請至少新增一張牌', 'error')
 
@@ -160,32 +191,22 @@ async function generateAI() {
   if (generateBtn) generateBtn.disabled = true
 
   try {
-    const user = await getCurrentUser()
-    if (!user) {
-      showToast('請先登入，才能寫入 Supabase', 'error')
-      return
-    }
-
     state.current.aiResult = '解牌生成中，請稍候…'
     render()
 
-    const token = await getAccessToken()
     const payload = {
       client_name: state.current.customerName.trim(),
       question_type: getQuestionTypeValue(),
       question: state.current.questionContent.trim(),
-      cards: state.current.drawnCards.map((card) => ({
-        name: card.cardName,
-        position: card.position === '其他' ? (card.customPosition || '自訂牌位') : card.position,
-        reversed: Boolean(card.isReversed),
-      })),
+      spread_type: '自訂牌陣',
+      include_reversed: Boolean(state.current.useReversal),
+      cards: buildCardsPayload(),
     }
 
     const response = await fetch(FUNCTION_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify(payload),
     })
@@ -198,38 +219,17 @@ async function generateAI() {
     state.current.aiResult = data.result || '沒有取得解牌結果'
     persistCurrent()
 
-    const dbPayload = {
-      user_id: user.id,
-      client_name: state.current.customerName.trim(),
-      question: state.current.questionContent.trim(),
-      question_type: getQuestionTypeValue(),
-      spread_type: '自訂牌陣',
-      cards: state.current.drawnCards.map((card, index) => ({
-        order: index + 1,
-        name: card.cardName,
-        position: card.position === '其他' ? (card.customPosition || '自訂牌位') : card.position,
-        raw_position: card.position,
-        custom_position: card.customPosition || '',
-        reversed: Boolean(card.isReversed),
-      })),
-      include_reversed: Boolean(state.current.useReversal),
-      ai_result: state.current.aiResult,
+    let readingId = data.reading_id || ''
+    if (!readingId) {
+      readingId = await writeReadingToSupabase(state.current.aiResult)
     }
 
-    const { data: inserted, error } = await supabase
-      .from('readings')
-      .insert(dbPayload)
-      .select('id')
-      .single()
-
-    if (error) throw error
-
-    state.current.id = inserted?.id || state.current.id
+    state.current.id = readingId || state.current.id || uid('session')
     state.current.isStarted = true
     upsertHistory(state, { ...state.current, questionType: getQuestionTypeValue(), isStarted: true })
     render()
     document.querySelector('#ai-result')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    showToast('已生成解牌並寫入 Supabase')
+    showToast('已生成解牌並寫入雲端')
   } catch (error) {
     console.error(error)
     state.current.aiResult = ''
@@ -239,23 +239,6 @@ async function generateAI() {
     const latestBtn = app.querySelector('#generateBtn')
     if (latestBtn) latestBtn.disabled = false
   }
-}
-
-async function handleLogin() {
-  const email = prompt('請輸入 Email 以接收 Magic Link 登入連結')
-  if (!email) return
-  const { error } = await supabase.auth.signInWithOtp({
-    email,
-    options: { emailRedirectTo: window.location.href },
-  })
-  if (error) return showToast(`登入連結寄送失敗：${error.message}`, 'error')
-  showToast('Magic Link 已寄出，請到信箱完成登入')
-}
-
-async function handleLogout() {
-  const { error } = await supabase.auth.signOut()
-  if (error) return showToast(`登出失敗：${error.message}`, 'error')
-  showToast('已登出')
 }
 
 function bindInputs() {
@@ -286,8 +269,6 @@ function bindInputs() {
   app.querySelector('#saveBtn')?.addEventListener('click', saveSession)
   app.querySelector('#generateBtn')?.addEventListener('click', generateAI)
   app.querySelector('#nextBtn')?.addEventListener('click', nextCustomer)
-  app.querySelector('#loginBtn')?.addEventListener('click', handleLogin)
-  app.querySelector('#logoutBtn')?.addEventListener('click', handleLogout)
   app.querySelector('#addCardBtn')?.addEventListener('click', () => openModal())
   app.querySelectorAll('[data-edit-card]').forEach((el) => el.addEventListener('click', () => {
     const card = state.current.drawnCards.find((c) => c.id === el.dataset.editCard)
@@ -321,19 +302,15 @@ function render() {
         return `<div class="card-item"><div class="card-top"><div><div class="card-meta">第 ${idx + 1} 張・${positionLabel}</div><div class="card-name">${card.cardName}</div><div class="card-meta">${state.current.useReversal ? (card.isReversed ? '逆位' : '正位') : '未啟用正逆位'} </div></div><div class="row"><button class="button btn-outline" data-edit-card="${card.id}">編輯</button><button class="button btn-danger" data-delete-card="${card.id}">刪除</button></div></div></div>`
       }).join('')
 
-  const currentUser = state.authUser || null
-
   app.innerHTML = `
     <header class="header">
       <div class="container header-inner">
         <div class="brand">
           <h1>🔮 塔羅解牌系統</h1>
           <small id="headerMeta">${state.current.customerName ? `目前諮詢：${state.current.customerName}${state.current.id ? ' <span class="badge">進行中</span>' : ''}` : ''}</small>
-          <div class="helper" style="margin-top:6px;">${currentUser ? `已登入：${currentUser.email || currentUser.id}` : '尚未登入 Supabase。登入後才能寫入雲端。'}</div>
+          <div class="helper" style="margin-top:6px;">打開網頁即可直接使用，解牌結果會同步寫入 Supabase 與本機備份。</div>
         </div>
         <div class="row">
-          <button class="button ${currentUser ? 'btn-outline' : 'btn-gold'}" id="loginBtn">${currentUser ? '重新寄送登入連結' : '登入 Supabase'}</button>
-          ${currentUser ? '<button class="button btn-outline" id="logoutBtn">登出</button>' : ''}
           <a class="button btn-ghost" href="./history.html">📋 歷史紀錄</a>
           ${state.current.isStarted ? '<button class="button btn-outline" id="nextBtn">👤 下一位顧客</button>' : ''}
         </div>
@@ -373,7 +350,7 @@ function render() {
       <section id="ai-result" class="panel panel-gold" style="margin-top:20px;">
         <h2 class="section-title">✦ 解牌結果</h2>
         <div class="divider"></div>
-        <div class="ai-result">${state.current.aiResult ? state.current.aiResult : '<span class="helper">尚未產生解牌。現在這版會呼叫 Supabase Edge Function，並將結果寫入 Supabase 與本機備份。</span>'}</div>
+        <div class="ai-result">${state.current.aiResult ? state.current.aiResult : '<span class="helper">尚未產生解牌。這版會直接呼叫 Edge Function，並在需要時將結果補寫進 Supabase。</span>'}</div>
       </section>
     </main>
   `
@@ -381,19 +358,4 @@ function render() {
   bindInputs()
 }
 
-async function syncAuthUser() {
-  try {
-    state.authUser = await getCurrentUser()
-  } catch (error) {
-    console.error(error)
-    state.authUser = null
-  }
-}
-
-supabase.auth.onAuthStateChange(async () => {
-  await syncAuthUser()
-  render()
-})
-
-await syncAuthUser()
 render()

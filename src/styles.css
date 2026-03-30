@@ -24,7 +24,7 @@ body {
   min-height: 100vh;
   background: var(--bg-base);
   color: var(--text-primary);
-  font-family: 'Noto Serif TC', serif;
+  font-family: 'Noto Sans TC', sans-serif;
   overflow-x: hidden;
 }
 body::before {
@@ -57,7 +57,7 @@ body::after {
 }
 .header-inner { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 0; }
 .brand h1, .title {
-  font-family: 'Cinzel', serif; letter-spacing: .08em; margin: 0;
+  font-family: 'Noto Serif TC', serif; letter-spacing: .08em; margin: 0; font-weight: 700;
 }
 .brand small { color: var(--text-secondary); display:block; margin-top: 4px; }
 .main { padding: 28px 0 64px; }
@@ -72,7 +72,7 @@ body::after {
 }
 .panel-gold { border-color: var(--border-gold); box-shadow: 0 0 20px rgba(201, 168, 76, 0.08), inset 0 1px 0 rgba(201, 168, 76, 0.1); }
 .divider { height: 1px; background: linear-gradient(to right, transparent, var(--gold-mid), transparent); margin: 14px 0 20px; }
-.section-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--gold-bright); font-family: 'Cinzel', serif; letter-spacing: .1em; }
+.section-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--gold-bright); font-family: 'Noto Serif TC', serif; letter-spacing: .08em; font-weight: 700; }
 .label { display: block; margin-bottom: 8px; font-size: 12px; color: var(--text-secondary); letter-spacing: .08em; }
 .input, .select, .textarea {
   width: 100%; border-radius: 12px; border: 1px solid var(--border-subtle);
@@ -121,3 +121,6 @@ body::after {
   .header-inner { align-items: flex-start; flex-direction: column; }
   .kv { grid-template-columns: 1fr; }
 }
+
+.card-name { font-family: 'Noto Serif TC', serif; }
+.helper, .label, .card-meta, .brand small { font-family: 'Noto Sans TC', sans-serif; }

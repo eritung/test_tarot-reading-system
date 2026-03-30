@@ -48,3 +48,10 @@ python3 -m http.server 8000
 也就是說：
 - **這版適合 GitHub Pages 預覽與展示**
 - **正式營運版建議另外部署，不要硬塞進 GitHub Pages**
+
+
+## 免登入版注意事項
+
+這個版本已移除所有登入介面。若要讓雲端寫入與歷史紀錄可正常運作，請確認 Supabase 的 `readings` 表已允許 `anon` 角色進行至少 `select`、`insert`（若要在歷史頁刪除，也要允許 `delete`）。
+
+若你想改成由 Edge Function 直接寫入資料表，也可以保留目前前端；前端會優先使用 function 回傳的 `reading_id`，若 function 沒有寫入資料，才會改由前端直接 insert。
