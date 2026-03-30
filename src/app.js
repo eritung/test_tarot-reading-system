@@ -129,6 +129,36 @@ function syncCurrentToHistory() {
   upsertHistory(state, { ...snapshotCurrentSession(), questionType: getQuestionTypeValue(), isStarted: state.current.isStarted })
 }
 
+function openUsageModal() {
+  const wrapper = document.createElement('div')
+  wrapper.className = 'modal-backdrop'
+  wrapper.innerHTML = `
+    <div class="panel panel-gold modal help-modal">
+      <div class="row modal-head">
+        <h3 class="section-title">✦ 使用說明</h3>
+        <button class="button btn-ghost modal-close-btn" data-close aria-label="關閉">✕</button>
+      </div>
+      <div class="divider"></div>
+      <div class="help-content">
+        <ol>
+          <li>先輸入客戶姓名、問題類型與提問內容。</li>
+          <li>點擊「新增抽牌」，加入本次抽出的牌卡與牌位。</li>
+          <li>按下「產生新的獨立解牌」後，會依目前每一張牌各自生成一筆結果。</li>
+          <li>若只想重算其中一張牌，直接按該筆結果的「重新生成」即可。</li>
+          <li>若選錯牌，可在抽牌紀錄或解牌結果卡中直接移除該張牌。</li>
+          <li>「歷史紀錄」可查詢本機與雲端資料，並用關鍵字搜尋客戶、題目、牌名與時間。</li>
+        </ol>
+      </div>
+      <div class="divider"></div>
+      <div class="row modal-footer-row">
+        <button class="button btn-gold" data-close>知道了</button>
+      </div>
+    </div>`
+  wrapper.querySelectorAll('[data-close]').forEach((el) => el.addEventListener('click', () => wrapper.remove()))
+  wrapper.addEventListener('click', (e) => { if (e.target === wrapper) wrapper.remove() })
+  document.body.appendChild(wrapper)
+}
+
 function openModal(editCard = null) {
   const usedCards = state.current.drawnCards.map((c) => c.cardName)
   const wrapper = document.createElement('div')
@@ -449,6 +479,7 @@ function bindInputs() {
   app.querySelector('#generateBtn')?.addEventListener('click', () => generateAI())
   app.querySelector('#nextBtn')?.addEventListener('click', nextCustomer)
   app.querySelector('#addCardBtn')?.addEventListener('click', () => openModal())
+  app.querySelector('#helpBtn')?.addEventListener('click', openUsageModal)
   app.querySelectorAll('[data-edit-card]').forEach((el) => el.addEventListener('click', () => {
     const card = state.current.drawnCards.find((c) => c.id === el.dataset.editCard)
     if (card) openModal(card)
@@ -521,6 +552,7 @@ function render() {
         </div>
         <div class="row header-button-group center-mobile-buttons">
           <a class="button btn-outline header-compact-btn" href="./history.html">📋 歷史紀錄</a>
+          <button class="button btn-outline header-compact-btn" id="helpBtn" type="button">ℹ️ 使用說明</button>
           ${state.current.isStarted ? '<button class="button btn-outline header-compact-btn" id="nextBtn">👤 下一位客戶</button>' : ''}
         </div>
       </div>
