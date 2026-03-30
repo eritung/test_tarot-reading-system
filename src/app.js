@@ -370,9 +370,9 @@ async function generateAI(options = {}) {
       return
     }
 
-    const existingPayloadKeys = new Set(
+    const existingGeneratedSourceIds = new Set(
       state.current.generatedReadings
-        .map((item) => JSON.stringify(item.payloadSnapshot || null))
+        .map((item) => item?.payloadSnapshot?.cards?.[0]?.source_id)
         .filter(Boolean)
     )
 
@@ -381,8 +381,12 @@ async function generateAI(options = {}) {
         ...payload,
         cards: [structuredClone(card)],
       }))
-      .filter((singlePayload) => !existingPayloadKeys.has(JSON.stringify(singlePayload)))
+      .filter((singlePayload) => {
+        const sourceId = singlePayload?.cards?.[0]?.source_id
+        return sourceId ? !existingGeneratedSourceIds.has(sourceId) : true
+      })
 
+    // 若這次沒有新增牌，代表使用者可能是更新題目或其他欄位後想直接重算目前這批牌
     if (!cardPayloads.length) {
       cardPayloads = payload.cards.map((card) => ({
         ...payload,
