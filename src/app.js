@@ -8,6 +8,8 @@ const app = document.querySelector('#app')
 
 if (!Array.isArray(state.current.generatedReadings)) state.current.generatedReadings = []
 if (typeof state.current.isGenerating !== 'boolean') state.current.isGenerating = false
+if (typeof state.current.isSummarizing !== 'boolean') state.current.isSummarizing = false
+if (!state.current.aggregateSummary) state.current.aggregateSummary = null
 state.history = (state.history || []).map((item) => ({ ...item, generatedReadings: Array.isArray(item.generatedReadings) ? item.generatedReadings : [] }))
 
 function uid(prefix = 'id') {
@@ -33,6 +35,10 @@ function persistCurrent() {
   saveState(state)
 }
 
+function invalidateAggregateSummary() {
+  state.current.aggregateSummary = null
+}
+
 function snapshotCurrentSession() {
   return {
     id: state.current.id,
@@ -47,6 +53,7 @@ function snapshotCurrentSession() {
       ...item,
       payloadSnapshot: item.payloadSnapshot ? structuredClone(item.payloadSnapshot) : null,
     })),
+    aggregateSummary: state.current.aggregateSummary ? structuredClone(state.current.aggregateSummary) : null,
   }
 }
 
@@ -82,6 +89,7 @@ function deleteCard(id) {
     const sourceId = item?.payloadSnapshot?.cards?.[0]?.source_id
     return sourceId ? sourceId !== id : true
   })
+  invalidateAggregateSummary()
   persistCurrent()
   syncCurrentToHistory()
   render()
@@ -95,6 +103,7 @@ function deleteGeneratedResult(id) {
   if (sourceId) {
     state.current.drawnCards = state.current.drawnCards.filter((card) => card.id !== sourceId)
   }
+  invalidateAggregateSummary()
   persistCurrent()
   syncCurrentToHistory()
   render()
@@ -134,9 +143,9 @@ function openUsageModal() {
   wrapper.className = 'modal-backdrop'
   wrapper.innerHTML = `
     <div class="panel panel-gold modal help-modal">
+      <button class="button btn-ghost modal-close-btn" data-close aria-label="關閉">✕</button>
       <div class="row modal-head">
         <h3 class="section-title">✦ 使用說明</h3>
-        <button class="button btn-ghost modal-close-btn" data-close aria-label="關閉">✕</button>
       </div>
       <div class="divider"></div>
       <div class="help-content">
@@ -145,6 +154,7 @@ function openUsageModal() {
           <li>點擊「新增抽牌」，加入本次抽出的牌卡與牌位。</li>
           <li>按下「產生新的獨立解牌」後，會依目前每一張牌各自生成一筆結果。</li>
           <li>若只想重算其中一張牌，直接按該筆結果的「重新生成」即可。</li>
+          <li>按下「統整全部抽牌結果」可將目前所有牌卡的獨立解讀整合成總結與行動建議。</li>
           <li>若選錯牌，可在抽牌紀錄或解牌結果卡中直接移除該張牌。</li>
           <li>「歷史紀錄」可查詢本機與雲端資料，並用關鍵字搜尋客戶、題目、牌名與時間。</li>
         </ol>
@@ -179,9 +189,9 @@ function openModal(editCard = null) {
     const cards = pool.filter((card) => card === editCard?.cardName || !usedCards.includes(card))
     wrapper.innerHTML = `
       <div class="panel panel-gold modal">
+        <button class="button btn-ghost modal-close-btn" data-close aria-label="關閉">✕</button>
         <div class="row modal-head">
           <h3 class="section-title">✦ ${editCard ? '編輯牌卡' : '選擇塔羅牌'}</h3>
-          <button class="button btn-ghost modal-close-btn" data-close aria-label="關閉">✕</button>
         </div>
         <div class="divider"></div>
         <div style="display:grid; gap:16px;">
@@ -239,6 +249,7 @@ function openModal(editCard = null) {
       } else {
         state.current.drawnCards.push(payload)
       }
+      invalidateAggregateSummary()
       persistCurrent()
       wrapper.remove()
       render()
@@ -271,11 +282,23 @@ async function insertReadingToSupabase(payload, aiResult) {
   return data?.id || ''
 }
 
-async function updateReadingInSupabase(readingId, aiResult) {
+async function updateReadingInSupabase(readingId, aiResult, payload = null) {
   if (!readingId) return ''
+  const updatePayload = payload
+    ? {
+        client_name: payload.client_name,
+        question: payload.question,
+        question_type: payload.question_type,
+        spread_type: payload.spread_type || '自訂牌陣',
+        cards: payload.cards,
+        include_reversed: Boolean(payload.include_reversed),
+        ai_result: aiResult,
+      }
+    : { ai_result: aiResult }
+
   const { data, error } = await supabase
     .from('readings')
-    .update({ ai_result: aiResult })
+    .update(updatePayload)
     .eq('id', readingId)
     .select('id')
     .single()
@@ -318,12 +341,94 @@ async function requestSingleReading(payload, targetResultId = null) {
 
   const existing = targetResultId ? state.current.generatedReadings.find((item) => item.id === targetResultId) : null
   if (!readingId && existing?.readingId) {
-    readingId = await updateReadingInSupabase(existing.readingId, aiResult)
+    readingId = await updateReadingInSupabase(existing.readingId, aiResult, payload)
   } else if (!readingId) {
     readingId = await insertReadingToSupabase(payload, aiResult)
   }
 
   return { aiResult, readingId }
+}
+
+
+async function requestAggregateSummary() {
+  const payload = buildPayloadFromCurrent()
+  if (!payload.client_name?.trim()) return showToast('請先輸入客戶姓名', 'error')
+  if (!payload.question?.trim()) return showToast('請輸入客戶提問內容', 'error')
+  if (!Array.isArray(payload.cards) || payload.cards.length === 0) return showToast('請至少新增一張牌', 'error')
+  if (!state.current.generatedReadings.length) return showToast('請先至少產生一筆獨立解牌結果', 'error')
+  if (state.current.isGenerating || state.current.isSummarizing) return
+
+  state.current.isSummarizing = true
+  render()
+
+  try {
+    const individualReadingsText = state.current.generatedReadings
+      .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+      .map((item, idx) => {
+        const cardNames = item?.payloadSnapshot?.cards?.map((c) => c.name).join('、') || `第 ${idx + 1} 張牌`
+        return `【第 ${idx + 1} 筆獨立解讀｜${cardNames}】
+${item.aiResult || '尚未取得內容'}`
+      })
+      .join('\n\n')
+
+    const summaryInstruction = `請忽略一般招呼與問候語。你是一位專業塔羅解牌師助手，請根據以下資訊提供解牌結果。只需要提供給使用者最精確且方便轉述給問事者的回覆即可，請用繁體中文回答，語氣溫和、清楚、具體。內容需包含：【✦抽到的牌是✦】、【✦整體分析✦】、【✦綜合建議✦】。
+
+原始提問：${payload.question}
+
+以下是目前各張牌的獨立解讀，請你整合這些結果後，再輸出最終總結：
+
+${individualReadingsText}`
+
+    const response = await fetch(FUNCTION_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...payload,
+        question: summaryInstruction,
+        summary_mode: true,
+      }),
+    })
+
+    const data = await response.json()
+    if (!response.ok || !data.ok) {
+      throw new Error(data?.error?.message || data?.error || '統整解讀失敗')
+    }
+
+    const summaryResult = data.result || '沒有取得統整結果'
+    const summaryPayload = {
+      ...payload,
+      spread_type: '整體統整',
+      question_type: payload.question_type ? `${payload.question_type}｜整體統整` : '整體統整',
+    }
+
+    const existingSummaryId = state.current.aggregateSummary?.readingId || ''
+    const summaryReadingId = existingSummaryId
+      ? await updateReadingInSupabase(existingSummaryId, summaryResult, summaryPayload)
+      : await insertReadingToSupabase(summaryPayload, summaryResult)
+
+    state.current.aggregateSummary = {
+      id: state.current.aggregateSummary?.id || uid('summary'),
+      readingId: summaryReadingId,
+      result: summaryResult,
+      createdAt: state.current.aggregateSummary?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      questionType: summaryPayload.question_type,
+      questionContent: payload.question,
+      cardsSnapshot: structuredClone(payload.cards),
+    }
+    persistCurrent()
+    syncCurrentToHistory()
+    render()
+    document.querySelector('#aggregate-summary')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    showToast('已完成整體統整')
+  } catch (error) {
+    console.error(error)
+    showToast(error?.message || '統整解讀失敗', 'error')
+  } finally {
+    state.current.isSummarizing = false
+    persistCurrent()
+    render()
+  }
 }
 
 async function generateAI(options = {}) {
@@ -334,6 +439,7 @@ async function generateAI(options = {}) {
   if (!Array.isArray(payload.cards) || payload.cards.length === 0) return showToast('請至少新增一張牌', 'error')
   if (state.current.isGenerating) return
 
+  invalidateAggregateSummary()
   state.current.isGenerating = true
   render()
 
@@ -456,6 +562,7 @@ async function generateAI(options = {}) {
 function bindInputs() {
   app.querySelector('#customerName')?.addEventListener('input', (e) => {
     state.current.customerName = e.target.value
+    invalidateAggregateSummary()
     persistCurrent()
     renderHeaderOnly()
   })
@@ -467,20 +574,24 @@ function bindInputs() {
   })
   app.querySelector('#customQuestionType')?.addEventListener('input', (e) => {
     state.current.customQuestionType = e.target.value
+    invalidateAggregateSummary()
     persistCurrent()
   })
   app.querySelector('#questionContent')?.addEventListener('input', (e) => {
     state.current.questionContent = e.target.value
+    invalidateAggregateSummary()
     persistCurrent()
   })
   app.querySelector('#useReversal')?.addEventListener('click', () => {
     state.current.useReversal = !state.current.useReversal
+    invalidateAggregateSummary()
     persistCurrent()
     render()
   })
   app.querySelector('#startBtn')?.addEventListener('click', startSession)
   app.querySelector('#saveBtn')?.addEventListener('click', saveSession)
   app.querySelector('#generateBtn')?.addEventListener('click', () => generateAI())
+  app.querySelector('#summaryBtn')?.addEventListener('click', requestAggregateSummary)
   app.querySelector('#nextBtn')?.addEventListener('click', nextCustomer)
   app.querySelector('#addCardBtn')?.addEventListener('click', () => openModal())
   app.querySelector('#helpBtn')?.addEventListener('click', openUsageModal)
@@ -509,6 +620,26 @@ function renderHeaderOnly() {
   const meta = app.querySelector('#headerMeta')
   if (!meta) return
   meta.textContent = state.current.customerName ? `目前諮詢：${state.current.customerName}` : ''
+}
+
+
+function renderAggregateSummary() {
+  if (!state.current.aggregateSummary?.result) return ''
+  const summary = state.current.aggregateSummary
+  const cardNames = summary.cardsSnapshot?.map((c) => c.name).join('、') || '—'
+  return `
+    <section id="aggregate-summary" class="panel panel-gold" style="margin-top:20px;">
+      <div class="row result-card-head">
+        <div>
+          <h2 class="section-title">✦ 綜合統整</h2>
+          <div class="card-meta">${new Date(summary.updatedAt || summary.createdAt || Date.now()).toLocaleString('zh-TW', { hour12: false })}</div>
+          <div class="result-card-summary tarot-card-title">${cardNames}</div>
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div class="ai-result">${summary.result}</div>
+    </section>
+  `
 }
 
 function renderResultCards() {
@@ -586,11 +717,14 @@ function render() {
 
       <section style="margin-top:20px;">
         <div class="row action-row-wrap">
-          <button class="button btn-gold" id="generateBtn" ${state.current.drawnCards.length === 0 || !state.current.questionContent.trim() || state.current.isGenerating ? 'disabled' : ''}>${state.current.isGenerating ? '🔮 占卜中…' : '🔮 產生新的獨立解牌'}</button>
+          <button class="button btn-gold" id="generateBtn" ${state.current.drawnCards.length === 0 || !state.current.questionContent.trim() || state.current.isGenerating || state.current.isSummarizing ? 'disabled' : ''}>${state.current.isGenerating ? '🔮 占卜中…' : '🔮 產生新的獨立解牌'}</button>
+          <button class="button btn-outline" id="summaryBtn" ${state.current.generatedReadings.length === 0 || state.current.isGenerating || state.current.isSummarizing ? 'disabled' : ''}>${state.current.isSummarizing ? '📝 統整中…' : '📝 統整全部抽牌結果'}</button>
           <button class="button btn-outline" id="saveBtn" ${state.current.customerName.trim() ? '' : 'disabled'}>💾 儲存本機紀錄</button>
         </div>
-        ${state.current.drawnCards.length === 0 ? '<div class="helper" style="margin-top:8px;">* 請先加入至少一張牌卡才能產生解牌</div>' : '<div class="helper" style="margin-top:8px;">每按一次都會依目前抽出的每張牌，分別新增一筆獨立結果；之後的重新生成也只會作用在指定的那一筆。</div>'}
+        ${state.current.drawnCards.length === 0 ? '<div class="helper" style="margin-top:8px;">* 請先加入至少一張牌卡才能產生解牌</div>' : '<div class="helper" style="margin-top:8px;">每按一次都會依目前抽出的每張牌，分別新增一筆獨立結果；你也可以另外按「統整全部抽牌結果」取得整體分析與綜合建議。</div>'}
       </section>
+
+      ${renderAggregateSummary()}
 
       <section id="ai-result" class="panel panel-gold" style="margin-top:20px;">
         <h2 class="section-title">✦ 解牌結果</h2>

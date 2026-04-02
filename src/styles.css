@@ -136,9 +136,10 @@ body::after {
   z-index: 50;
   backdrop-filter: blur(4px);
 }
-.modal { position: relative; width: min(680px, 100%); max-height: 90vh; overflow: auto; }
-.modal-head { justify-content: space-between; align-items: center; position: relative; padding-right: 42px; min-height: 30px; }
-.modal-close-btn { position: absolute; top: 0; right: 0; padding: 6px 10px; min-width: 0; width: auto; border-radius: 999px; z-index: 2; }
+.modal { position: relative; width: min(680px, 100%); max-height: 90vh; overflow: auto; padding-top: 28px; }
+.modal-head { justify-content: flex-start; align-items: center; position: relative; padding-right: 0; min-height: 30px; }
+.modal-close-btn { position: absolute !important; top: 14px !important; right: 14px !important; left: auto !important; margin: 0 !important; padding: 4px 8px !important; min-width: 0 !important; width: auto !important; border-radius: 999px; z-index: 20; line-height: 1; }
+.modal .modal-head, .help-modal .modal-head { padding-right: 42px; }
 .modal-footer-row { justify-content: flex-end; }
 .modal-category-row { gap: 10px; }
 .minor-suit-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; }
@@ -155,13 +156,14 @@ body::after {
 .history-search-section { margin-bottom:20px; }
 .history-tools-grid { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
 .history-search-wrap { flex: 1; min-width: 0; }
-.history-tools-actions { display: flex; flex-direction: row; align-items: flex-end; justify-content: flex-end; }
+.history-tools-actions { display: flex; flex-direction: row; align-items: stretch; justify-content: flex-end; }
 .back-home-btn { margin-bottom: 14px; align-self: flex-start; }
 .history-tools-panel { display: flex; flex-direction: column; }
 .brand-center-mobile, .center-mobile-buttons { width: auto; }
 .section-head-wrap { justify-content: space-between; }
 .action-row-wrap { align-items: center; }
 .header-compact-btn { padding: 8px 12px; min-width: 110px; }
+.history-section-toggle { min-width: 132px; }
 .header-button-group .button { width: auto; }
 
 .history-delete-btn { padding: 8px 12px; min-width: 0; font-size: 13px; align-self: flex-start; }
@@ -177,7 +179,7 @@ body::after {
   .grid, .minor-suit-grid { grid-template-columns: 1fr 1fr; }
   .header-inner, .main-header-inner, .history-header-inner { align-items: center; flex-direction: column; text-align: center; }
   .brand-center-mobile { width: 100%; text-align: center; }
-  .center-mobile-buttons, .header-button-group { width: 100%; justify-content: center; flex-wrap: nowrap; }
+  .center-mobile-buttons, .header-button-group { width: 100%; justify-content: center; flex-wrap: wrap; gap: 8px; padding: 0 8px; }
   .header-button-group .button { flex: 0 1 auto; }
   .kv { grid-template-columns: 1fr; }
   .panel { padding: 18px; }
@@ -199,7 +201,8 @@ body::after {
   .brand h1 { font-size: 1.45rem; }
   .button { width: 100%; }
   .header-button-group .button, .header-compact-btn { width: auto; }
-  .header-button-group { display: flex; justify-content: center; gap: 10px; }
+  .header-button-group { display: flex; justify-content: center; gap: 8px; max-width: 100%; margin: 0 auto; padding: 0 10px; }
+  .header-compact-btn { min-width: 0; padding: 7px 10px; font-size: 13px; }
   .row { gap: 10px; }
   .cards .card-item { padding: 14px; }
   .card-content { width: 100%; }
@@ -216,3 +219,10 @@ body::after {
 }
 
 .helper, .label, .card-meta, .brand small, body, .input, .select, .textarea, .button { font-family: 'Noto Sans TC', sans-serif; }
+
+.history-record-list-standalone { margin-top: 14px; }
+.history-record .result-toggle-block { margin-top: 10px; }
+
+
+#summaryBtn { min-width: 210px; }
+#aggregate-summary .section-title { margin-bottom: 6px; }

@@ -9,8 +9,27 @@ let isComposing = false
 let shouldRefocusSearch = false
 let searchSelectionStart = null
 let searchSelectionEnd = null
+let isLocalSectionExpanded = false
 const expandedRemoteIds = new Set()
 const expandedLocalIds = new Set()
+
+function normalizeCard(card = {}) {
+  return {
+    name: card.name || '',
+    position: card.position || card.raw_position || card.custom_position || '',
+    reversed: !!card.reversed,
+  }
+}
+
+function getReadingSignature(row = {}) {
+  const cards = (row.cards || []).map(normalizeCard)
+  return JSON.stringify({
+    spread_type: row.spread_type || '',
+    question_type: row.question_type || '',
+    question: row.question || '',
+    cards,
+  })
+}
 
 function formatDate(dateString) {
   if (!dateString) return '—'
@@ -29,12 +48,13 @@ function escapeHtml(value = '') {
 function readingToSearchText(item, isLocal = false) {
   if (isLocal) {
     const generatedTexts = (item.generatedReadings || []).map((g) => [g.aiResult, g.payloadSnapshot?.cards?.map((c) => c.name).join(' ')].filter(Boolean).join(' ')).join(' ')
+    const aggregateText = [item.aggregateSummary?.result, item.aggregateSummary?.cardsSnapshot?.map((c) => c.name).join(' ')].filter(Boolean).join(' ')
     const cards = (item.drawnCards || []).map((c) => `${c.cardName} ${c.position || ''} ${c.customPosition || ''}`).join(' ')
-    return [item.customerName, item.questionType, item.questionContent, item.aiResult, generatedTexts, cards, formatDate(item.updatedAt)].filter(Boolean).join(' ').toLowerCase()
+    return [item.customerName, item.questionType, item.questionContent, item.aiResult, generatedTexts, aggregateText, cards, formatDate(item.updatedAt)].filter(Boolean).join(' ').toLowerCase()
   }
   const cards = (item.cards || []).map((c) => `${c.name} ${c.position || ''} ${c.raw_position || ''} ${c.custom_position || ''}`).join(' ')
-  const results = (item.readings || []).map((r) => [r.ai_result || '', r.question || '', r.question_type || '', formatDate(r.created_at), formatDate(r.updated_at)].join(' ')).join(' ')
-  return [item.client_name, item.question_type, item.question, results || item.ai_result, cards, formatDate(item.created_at)].filter(Boolean).join(' ').toLowerCase()
+  const results = (item.readings || []).map((r) => [r.ai_result || '', r.question || '', r.question_type || '', r.spread_type || '', formatDate(r.created_at), formatDate(r.updated_at)].join(' ')).join(' ')
+  return [item.client_name, item.question_type, item.question, item.spread_type, results || item.ai_result, cards, formatDate(item.created_at), formatDate(item.latest_at)].filter(Boolean).join(' ').toLowerCase()
 }
 
 function filterReadings(list, isLocal = false) {
@@ -51,25 +71,52 @@ function buildRemoteGroups(rows = []) {
       map.set(key, {
         id: key,
         client_name: row.client_name,
-        question_type: row.question_type,
-        question: row.question,
         created_at: row.created_at,
-        readings: [],
-        cards: [],
+        latest_at: row.updated_at || row.created_at,
+        readingsMap: new Map(),
+        allCards: new Map(),
       })
     }
     const group = map.get(key)
-    group.readings.push(row)
-    if (!group.created_at || new Date(row.created_at) > new Date(group.created_at)) group.created_at = row.created_at
-    ;(row.cards || []).forEach((card) => group.cards.push(card))
+    const signature = getReadingSignature(row)
+    const existing = group.readingsMap.get(signature)
+    const currentTime = new Date(row.updated_at || row.created_at || 0).getTime()
+    const existingTime = existing ? new Date(existing.updated_at || existing.created_at || 0).getTime() : -1
+
+    if (!existing || currentTime >= existingTime) {
+      group.readingsMap.set(signature, row)
+    }
+
+    ;(row.cards || []).forEach((card = {}) => {
+      const normalized = normalizeCard(card)
+      const label = `${normalized.name || ''}${normalized.reversed ? '（逆位）' : ''}`
+      if (label.trim()) group.allCards.set(label, normalized)
+    })
+
+    if (!group.created_at || new Date(row.created_at) < new Date(group.created_at)) group.created_at = row.created_at
+    if (!group.latest_at || new Date(row.updated_at || row.created_at) > new Date(group.latest_at)) group.latest_at = row.updated_at || row.created_at
   })
-  return Array.from(map.values()).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+
+  return Array.from(map.values())
+    .map((group) => {
+      const readings = Array.from(group.readingsMap.values())
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+      return {
+        id: group.id,
+        client_name: group.client_name,
+        created_at: group.created_at,
+        latest_at: group.latest_at,
+        cards: Array.from(group.allCards.values()),
+        readings,
+      }
+    })
+    .sort((a, b) => new Date(b.latest_at) - new Date(a.latest_at))
 }
 
 async function loadRemoteReadings() {
   const { data, error } = await supabase
     .from('readings')
-    .select('id, client_name, question, question_type, cards, ai_result, created_at, updated_at')
+.select('id, client_name, question, question_type, spread_type, cards, ai_result, created_at, updated_at')
     .order('created_at', { ascending: false })
 
   if (error) {
@@ -154,18 +201,21 @@ function render() {
                 <button class="button btn-danger history-delete-btn" data-delete-remote="${item.id}">刪除</button>
                 <div class="kv" style="margin-top:12px;">
                   <div class="helper">紀錄筆數</div><div>${item.readings?.length || 0} 筆</div>
-                  <div class="helper">所有牌張</div><div>${escapeHtml((item.cards || []).map((c) => `${c.name}${c.reversed ? '（逆位）' : ''}`).join('、') || '—')}</div>
+                  <div class="helper">所有牌張</div><div>${escapeHtml((item.cards || []).map((c) => typeof c === 'string' ? c : `${c.name}${c.reversed ? '（逆位）' : ''}`).join('、') || '—')}</div>
                 </div>
-                ${renderResultToggle((item.readings || []).map((reading, idx) => `<div class="history-record"><div class="history-record-meta"><div><strong>第 ${idx + 1} 筆</strong>　<span class="helper">${formatDate(reading.updated_at || reading.created_at)}</span></div><div><span class="helper">問題類型</span>：${escapeHtml(reading.question_type || '—')}</div><div><span class="helper">提問內容</span>：${escapeHtml(reading.question || '—')}</div><div><span class="helper">抽到的牌</span>：${escapeHtml((reading.cards || []).map((c) => `${c.name}${c.reversed ? '（逆位）' : ''}`).join('、') || '—')}</div><div>${escapeHtml(reading.ai_result || '尚未生成').replace(/\n/g, '<br>')}</div></div></div>`).join(''), expanded, 'remote', item.id)}
+                ${renderResultToggle((item.readings || []).map((reading, idx) => `<div class="history-record"><div class="history-record-meta"><div><strong>第 ${idx + 1} 筆</strong>　<span class="helper">${formatDate(reading.updated_at || reading.created_at)}</span></div><div><span class="helper">問題類型</span>：${escapeHtml(reading.question_type || '—')}</div><div><span class="helper">紀錄類型</span>：${escapeHtml(reading.spread_type || '一般解牌')}</div><div><span class="helper">提問內容</span>：${escapeHtml(reading.question || '—')}</div><div><span class="helper">抽到的牌</span>：${escapeHtml((reading.cards || []).map((c) => typeof c === 'string' ? c : `${c.name}${c.reversed ? '（逆位）' : ''}`).join('、') || '—')}</div><div>${escapeHtml(reading.ai_result || '尚未生成').replace(/\n/g, '<br>')}</div></div></div>`).join(''), expanded, 'remote', item.id)}
               </article>`
             }).join('')}
           </div>`}
       </section>
 
       <section class="panel panel-gold">
-        <h2 class="section-title">✦ 本機備份紀錄</h2>
+        <div class="row" style="justify-content: space-between; align-items: center; gap: 12px;">
+          <h2 class="section-title">✦ 本機備份紀錄</h2>
+          <button class="button btn-outline history-section-toggle" id="toggleLocalSectionBtn" type="button">${isLocalSectionExpanded ? '收合本機資料' : '展開本機資料'}</button>
+        </div>
         <div class="divider"></div>
-        ${state.history.length === 0 ? `<div class="empty"><div style="font-size:30px;">🗂️</div><div>目前沒有任何本機紀錄</div></div>` : filteredLocal.length === 0 ? `<div class="empty"><div style="font-size:30px;">🔎</div><div>找不到符合關鍵字的本機紀錄</div></div>` : `
+        ${!isLocalSectionExpanded ? `<div class="helper">本機資料預設隱藏，點擊上方按鈕即可展開查看。</div>` : state.history.length === 0 ? `<div class="empty"><div style="font-size:30px;">🗂️</div><div>目前沒有任何本機紀錄</div></div>` : filteredLocal.length === 0 ? `<div class="empty"><div style="font-size:30px;">🔎</div><div>找不到符合關鍵字的本機紀錄</div></div>` : `
           <div class="history-list">
             ${filteredLocal.map((item) => {
               const expanded = expandedLocalIds.has(item.id)
@@ -188,7 +238,7 @@ function render() {
                   <div class="helper">抽牌張數</div><div>${item.drawnCards?.length || 0} 張</div>
                   <div class="helper">抽到的牌</div><div>${escapeHtml((item.drawnCards || []).map((c) => `${c.cardName}${c.isReversed ? '（逆位）' : ''}`).join('、') || '—')}</div>
                 </div>
-                ${renderResultToggle(generatedTexts, expanded, 'local', item.id)}
+                ${renderResultToggle(generatedTexts + aggregateBlock, expanded, 'local', item.id)}
               </article>`
             }).join('')}
           </div>`}
@@ -220,6 +270,11 @@ function render() {
       render()
     })
   }
+
+  root.querySelector('#toggleLocalSectionBtn')?.addEventListener('click', () => {
+    isLocalSectionExpanded = !isLocalSectionExpanded
+    render()
+  })
 
   root.querySelector('#clearAllBtn')?.addEventListener('click', () => {
     if (!confirm('確定要清空全部本機紀錄嗎？')) return
